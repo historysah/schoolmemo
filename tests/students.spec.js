@@ -36,3 +36,26 @@ test('일괄 입력 검증, 등록, 새로고침, 기존 학생 보존',async({p
  await d.getByLabel('학생 표 붙여넣기').fill(BULK_COLUMNS.join('\t')+'\n'+rows.join('\t')+'\n이가상\t2\t3\t5');await d.getByRole('button',{name:'입력 내용 확인'}).click();await expect(d.getByRole('button',{name:'일괄 등록하기'})).toBeEnabled();await expect(d.locator('tbody tr')).toHaveCount(2);await d.getByRole('button',{name:'일괄 등록하기'}).click();
  await expect(page.locator('.student-card')).toHaveCount(5);await page.reload();await page.getByRole('button',{name:/학생 명부 및 인적사항/}).click();await expect(page.locator('.student-card')).toHaveCount(5);await page.getByRole('button',{name:/신가상/}).click();await expect(page.getByText('신보호',{exact:true})).toBeVisible();await expect(page.getByText('교육학과',{exact:true})).toBeVisible();
 });
+test('일반 엑셀 양식 다운로드: 정상 파일, 열 제목, 연락처 서식과 관계 선택',async({page})=>{
+ const {execFileSync}=await import('node:child_process');
+ await page.goto('/');await page.getByRole('button',{name:/학생 명부 및 인적사항/}).click();await page.getByRole('button',{name:'일괄 정보 입력',exact:true}).click();
+ const downloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'엑셀 양식 다운로드 (.xlsx)',exact:true}).click();const download=await downloadPromise;
+ expect(download.suggestedFilename()).toBe('학생_일괄입력_양식.xlsx');expect(await download.failure()).toBeNull();
+ execFileSync('python',['-c',`
+import sys,json,zipfile,xml.etree.ElementTree as E
+ns={'m':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+with zipfile.ZipFile(sys.argv[1]) as z:
+ assert z.testzip() is None
+ sheet=E.fromstring(z.read('xl/worksheets/sheet1.xml'))
+ headers=[''.join(c.itertext()) for c in sheet.findall('.//m:row[@r="1"]/m:c/m:is/m:t',ns)]
+ assert headers==json.loads(sys.argv[2])
+ styles=E.fromstring(z.read('xl/styles.xml')).find('m:cellXfs',ns)
+ for cell in ['E2','I2','L2']:
+  c=sheet.find('.//m:c[@r="'+cell+'"]',ns)
+  assert styles[int(c.get('s'))].get('numFmtId')=='49'
+ rules=sheet.findall('m:dataValidations/m:dataValidation',ns)
+ assert any(r.get('type')=='list' and 'G2:G301' in r.get('sqref') and 'J2:J301' in r.get('sqref') and r.find('m:formula1',ns).text=='"부,모,기타"' for r in rules)
+ workbook=E.fromstring(z.read('xl/workbook.xml'))
+ assert [s.get('name') for s in workbook.findall('m:sheets/m:sheet',ns)]==['학생 입력','사용 안내']
+`,await download.path(),JSON.stringify(BULK_COLUMNS)]);
+});
