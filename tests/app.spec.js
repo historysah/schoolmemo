@@ -9,8 +9,8 @@ test('학생 등록과 수정, 다중 연결, 검색, 별표, 저장, 삭제',as
  await d.getByLabel('학년 *').fill('1');await d.getByLabel('반 *',{exact:true}).fill('2');await d.getByLabel('번호 *',{exact:true}).fill('5');
  await d.getByRole('button',{name:'저장하기'}).click();
  await page.getByRole('button',{name:/테스트학생/}).click();
- await page.getByRole('button',{name:'정보 수정'}).click();
- await d.getByLabel('학부모 성함').fill('테스트보호자');await d.getByRole('button',{name:'저장하기'}).click();
+ await page.getByRole('button',{name:'기본 정보 수정'}).click();
+ await d.getByLabel('보호자 1 관계').selectOption('모');await d.getByLabel('보호자 1 성함').fill('테스트보호자');await d.getByRole('button',{name:'저장하기'}).click();
  await expect(page.getByText('테스트보호자',{exact:true})).toBeVisible();
  await page.locator('#add').click();
  await d.getByLabel('제목 *').fill('함께한 상담');await d.getByLabel('내용 *').fill('이야기 @김');
