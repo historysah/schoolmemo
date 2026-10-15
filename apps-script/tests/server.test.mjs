@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {runtime,join} from './runtime.mjs';
-test('인증, 팀·언어·비밀번호 검증과 비밀 값 비노출',()=>{const r=runtime();assert.throws(()=>join(r,1,{code:'wrong'}));assert.throws(()=>join(r,6));assert.throws(()=>join(r,1,{language:'en'}));assert.throws(()=>join(r,1,{teacherPassword:'wrong'}));assert.throws(()=>r.ctx.getMessages('invalid'));assert.deepEqual(Object.keys(r.ctx.getConfig()).sort(),['configured','translationReady']);});
+test('인증, 팀·언어·비밀번호 검증과 비밀 값 비노출',()=>{const r=runtime();assert.throws(()=>join(r,1,{code:'wrong'}));assert.throws(()=>join(r,6));assert.throws(()=>join(r,1,{language:'en'}));assert.throws(()=>join(r,1,{teacherPassword:'wrong'}));assert.throws(()=>r.ctx.getMessages('invalid'));assert.deepEqual(Object.keys(r.ctx.getConfig()).sort(),['configured','translationReady','webAppUrl']);});
 test('같은 팀 공유와 다른 팀 분리, 작성자·교사 권한',()=>{const r=runtime(),a=join(r),b=join(r),other=join(r,2),teacher=join(r,1,{teacherPassword:'teacher-password-test'});const sent=r.ctx.sendMessage(a.token,'안녕하세요',randomUUID());assert.equal(r.ctx.getMessages(b.token)[0].text,'안녕하세요');assert.equal(r.ctx.getMessages(b.token)[0].mine,false);assert.equal(r.ctx.getMessages(other.token).length,0);assert.throws(()=>r.ctx.deleteMessage(b.token,sent.id));assert.throws(()=>r.ctx.deleteMessage(other.token,sent.id));assert.throws(()=>r.ctx.clearTeam(b.token));r.ctx.deleteMessage(teacher.token,sent.id);assert.equal(r.ctx.getMessages(a.token).length,0);});
 test('API 키 없이 원문 저장, 재시도 설정 안내',()=>{const r=runtime(),s=join(r);const result=r.ctx.sendMessage(s.token,'원문',randomUUID());assert.equal(r.ctx.getMessages(s.token)[0].status,'unconfigured');assert.equal(r.providerCalls,0);assert.throws(()=>r.ctx.retryTranslation(s.token,result.id));});
 test('모의 번역 제공자: 양방향·실패·키 설정 후 재시도',()=>{const r=runtime(),ko=join(r),ja=join(r,1,{language:'ja'});const old=r.ctx.sendMessage(ko.token,'안녕하세요',randomUUID());r.props.set('OPENAI_API_KEY','test-only-key');r.ctx.retryTranslation(ko.token,old.id);r.ctx.sendMessage(ja.token,'こんにちは',randomUUID());r.ctx.sendMessage(ko.token,'FAIL',randomUUID());const messages=r.ctx.getMessages(ko.token);assert.equal(messages[0].translation,'こんにちは');assert.equal(messages[1].translation,'안녕하세요');assert.equal(messages[2].status,'failed');assert.equal(r.providerCalls,3);});
@@ -63,4 +63,16 @@ test('번역 도중 전체 초기화해도 이전 의견·대화가 복구되지
  const again=join(r);assert.ok(r.ctx.getRoomState(again.token).opinions.every(o=>!o.text&&!o.translation));
  const teacher=join(r,1,{teacherPassword:'teacher-password-test'});r.setProviderHook(()=>r.ctx.clearAll(teacher.token,'RESET_ALL'));
  r.ctx.sendMessage(again.token,'지워질 대화',randomUUID());assert.equal(r.ctx.getRoomState(join(r).token).messages.length,0);
+});
+
+test('QR 접속 주소는 정식 Google 웹앱 /exec URL만 제공',()=>{
+ const r=runtime(),published='https://script.google.com/macros/s/TEST_DEPLOYMENT/exec';assert.equal(r.ctx.getConfig().webAppUrl,published);
+ for(const url of ['','https://script.google.com/macros/s/TEST_DEPLOYMENT/dev','https://fake-script.google.com/macros/s/TEST/exec','https://script.google.com/macros/s/TEST/exec?token=secret','https://example.com/exec','https://temp.googleusercontent.com/userCodeAppPanel']){r.props.set('TEST_SERVICE_URL',url);assert.equal(r.ctx.getConfig().webAppUrl,'');}
+ r.props.set('WEB_APP_URL',published);assert.equal(r.ctx.getConfig().webAppUrl,published);
+ r.props.set('WEB_APP_URL','https://script.google.com/a/macros/school.example/s/DEPLOYMENT/exec');assert.equal(r.ctx.getConfig().webAppUrl,'https://script.google.com/a/macros/school.example/s/DEPLOYMENT/exec');
+ r.props.set('WEB_APP_URL','javascript:alert(1)');assert.equal(r.ctx.getConfig().webAppUrl,'');
+});
+test('별도 교사 로그인은 비밀번호 없이 학생으로 입장하지 않음',()=>{
+ const r=runtime();assert.throws(()=>join(r,1,{teacherLogin:true,teacherPassword:''}),/교사 비밀번호/);assert.throws(()=>join(r,1,{teacherLogin:true,teacherPassword:'wrong'}),/교사 비밀번호/);
+ assert.equal(join(r,1,{teacherLogin:true,teacherPassword:'teacher-password-test'}).teacher,true);assert.equal(join(r).teacher,false);
 });

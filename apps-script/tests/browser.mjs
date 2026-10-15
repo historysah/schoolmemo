@@ -15,11 +15,22 @@ try{
   function runner(success,fail){return new Proxy({}, {get(_,name){if(name==='withSuccessHandler')return fn=>runner(fn,fail);if(name==='withFailureHandler')return fn=>runner(success,fn);return (...args)=>window.gasCall(name,args).then(success).catch(e=>fail?.({message:e.message}));}});}
   window.google={script:{run:runner(()=>{},()=>{})}};
  });await p.goto(url);return p;}
+
  const a=await page(),b=await page();
- async function join(p,name,lang='ko',team=1,teacher=false){await p.locator('[name=code]').fill('TEST-EVENT');await p.locator('[name=name]').fill(name);await p.locator(`[name=language][value=${lang}]`).check();await p.locator(`[name=team][value="${team}"]`).check();if(teacher){await p.locator('details summary').click();await p.locator('[name=teacherPassword]').fill('teacher-password-test');}await p.locator('.enter-button').click();await p.locator('#room:not([hidden])').waitFor();}
+ await a.locator('#site-qr:not([hidden])').waitFor();await a.locator('#site-qr').evaluate(img=>img.decode());
+ assert.equal(await a.title(),'해밀고-하나조노고 3차 온라인 교류');
+ assert.ok((await a.locator('#site-qr').getAttribute('src')).startsWith('data:image/png;base64,'));
+ await a.locator('#site-qr').screenshot({path:'/tmp/sai-entry-qr.png'});
+ await a.setViewportSize({width:1440,height:1000});await a.screenshot({path:'/tmp/sai-readable-entry.png',fullPage:true});
+ const header=await a.locator('header').boundingBox(),teacherButton=await a.locator('#teacher-login').boundingBox();assert.ok(teacherButton.height>=48);assert.ok(teacherButton.x>header.width/2);
+ await a.setViewportSize({width:390,height:844});assert.equal(await a.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ await a.locator('#teacher-login').click();await a.locator('#teacher-dialog[open]').waitFor();assert.ok((await a.locator('#teacher-password').boundingBox()).height>=48);await a.screenshot({path:'/tmp/sai-teacher-login-mobile.png',fullPage:true});await a.locator('#close-teacher').click();
+ await a.screenshot({path:'/tmp/sai-readable-mobile-entry.png',fullPage:true});await a.setViewportSize({width:1440,height:1000});
+
+ async function join(p,name,lang='ko',team=1,teacher=false){await p.locator('[name=code]').fill('TEST-EVENT');await p.locator('[name=name]').fill(name);await p.locator(`[name=language][value=${lang}]`).check();await p.locator(`[name=team][value="${team}"]`).check();if(teacher){await p.locator('#teacher-login').click();await p.locator('#teacher-password').fill('teacher-password-test');await p.locator('#teacher-team').selectOption(String(team));await p.locator('#teacher-language').selectOption(lang);await p.locator('#teacher-submit').click();}else await p.locator('.enter-button').click();await p.locator('#room:not([hidden])').waitFor();}
  await join(a,'한국 학생');await join(b,'日本の生徒','ja');
  await a.locator('#message').fill('처음 뵙겠습니다');await a.locator('#send').click();await b.getByText('처음 뵙겠습니다',{exact:true}).waitFor({timeout:12000});
- assert.equal(await a.locator('input[type=file]').count(),0);
+ assert.equal(await a.locator('input[type=file]').count(),0);assert.ok(await a.locator('#message').evaluate(el=>parseFloat(getComputedStyle(el).fontSize))>=18);
  r.props.set('OPENAI_API_KEY','test-only-key');await a.getByText('번역 재시도 · 再翻訳',{exact:true}).click();await a.locator('.translation').filter({hasText:'こんにちは'}).waitFor();
  await b.locator('#message').fill('こんにちは');await b.locator('#send').click();await a.locator('.translation').filter({hasText:'안녕하세요'}).waitFor({timeout:12000});
  await a.locator('#message').fill('<script>alert(1)</script>');await a.locator('#send').click();await a.getByText('<script>alert(1)</script>',{exact:true}).waitFor();
@@ -47,5 +58,5 @@ try{
  assert.equal(await a.locator('#all-opinions[open]').count(),0);
  await a.locator('#entry:not([hidden])').waitFor({timeout:12000});await join(a,'재입장 학생');await a.locator('#save-opinion:not([disabled])').waitFor();assert.equal(await a.locator('#messages .message').count(),0);assert.equal(await a.locator('#opinion-text').inputValue(),'');
  await a.locator('#logout').click();await a.locator('#entry:not([hidden])').waitFor();assert.equal(await a.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);
- console.log('PASS: four-browser sharing, team opinion editing/conflicts, all-five-team view, teacher-only full reset and re-entry, bilingual chat, safe text, desktop/mobile layout.');
+ console.log('PASS: QR image and published URL, larger text/controls, corner teacher login, four-browser sharing, team opinion editing/conflicts, all-five-team view, teacher-only full reset and re-entry, bilingual chat, safe text, desktop/mobile layout.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

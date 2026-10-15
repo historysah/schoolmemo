@@ -1,13 +1,20 @@
-/** 사이: Google Apps Script V8. 비밀 값은 프로젝트 설정 > 스크립트 속성에만 입력하세요. */
+/** 해밀고-하나조노고 3차 온라인 교류: Google Apps Script V8. 비밀 값은 프로젝트 설정 > 스크립트 속성에만 입력하세요. */
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('사이 · 한일 역사 교류')
+    .setTitle('해밀고-하나조노고 3차 온라인 교류')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 function getConfig() {
   var p = PropertiesService.getScriptProperties();
   return {configured: !!p.getProperty('EVENT_CODE') && !!p.getProperty('SPREADSHEET_ID'),
-    translationReady: !!p.getProperty('OPENAI_API_KEY')};
+    translationReady: !!p.getProperty('OPENAI_API_KEY'), webAppUrl: webAppUrl_()};
+}
+// iframe의 임시 주소 대신 정식 웹앱 주소만 QR코드로 제공합니다.
+function webAppUrl_() {
+  var url = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');
+  if (!url) { try { url = ScriptApp.getService().getUrl(); } catch (ignored) { return ''; } }
+  url = String(url || '').trim();
+  return /^https:\/\/script\.google\.com\/(?:macros\/s|a\/macros\/[^/?#]+\/s)\/[A-Za-z0-9_-]+\/exec$/.test(url) ? url : '';
 }
 function joinRoom(data) {
   data = data || {};
@@ -18,7 +25,7 @@ function joinRoom(data) {
   var team = Number(data.team);
   if (!name || [1,2,3,4,5].indexOf(team) < 0 || ['ko','ja'].indexOf(data.language) < 0) throw new Error('이름, 팀, 언어를 확인해 주세요.');
   var teacher = false;
-  if (data.teacherPassword) {
+  if (data.teacherLogin || data.teacherPassword) {
     var password = p.getProperty('TEACHER_PASSWORD');
     if (!password || password.length < 12 || typeof data.teacherPassword !== 'string' || !same_(data.teacherPassword, password)) throw new Error('교사 비밀번호가 맞지 않습니다.');
     teacher = true;
