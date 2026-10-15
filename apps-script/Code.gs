@@ -30,10 +30,33 @@ function joinRoom(data) {
     if (!password || password.length < 12 || typeof data.teacherPassword !== 'string' || !same_(data.teacherPassword, password)) throw new Error('교사 비밀번호가 맞지 않습니다.');
     teacher = true;
   }
-  var token = Utilities.getUuid() + Utilities.getUuid();
-  var s = {id: Utilities.getUuid(), name: name, team: team, language: data.language, teacher: teacher, activityVersion: activityVersion_(), expires: Date.now() + 21600000};
-  CacheService.getScriptCache().put('session:' + digest_(token), JSON.stringify(s), 21600);
-  return {token: token, name: s.name, team: s.team, language: s.language, teacher: s.teacher};
+  return createSession_(name,team,data.language,teacher);
+}
+function joinTeacher(password) {
+  var p=PropertiesService.getScriptProperties(), expected=p.getProperty('TEACHER_PASSWORD');
+  if (!expected || expected.length<12 || typeof password!=='string' || !same_(password,expected)) throw new Error('교사 비밀번호가 맞지 않습니다.');
+  if (!p.getProperty('SPREADSHEET_ID')) throw new Error('SPREADSHEET_ID를 설정해 주세요.');
+  return createSession_('교사',1,'ko',true);
+}
+function switchTeacherTeam(token,team) {
+  return locked_(function() {
+    var s=session_(token);
+    if (!s.teacher) throw new Error('교사만 재입장 없이 팀을 이동할 수 있습니다.');
+    team=Number(team);
+    if ([1,2,3,4,5].indexOf(team)<0) throw new Error('1~5팀을 선택해 주세요.');
+    s.team=team;
+    var next=storeSession_(s);
+    CacheService.getScriptCache().remove('session:'+digest_(token));
+    return next;
+  });
+}
+function createSession_(name,team,language,teacher) {
+  return storeSession_({id:Utilities.getUuid(),name:name,team:team,language:language,teacher:teacher,activityVersion:activityVersion_(),expires:Date.now()+21600000});
+}
+function storeSession_(s) {
+  var token=Utilities.getUuid()+Utilities.getUuid();
+  CacheService.getScriptCache().put('session:'+digest_(token),JSON.stringify(s),Math.max(1,Math.min(21600,Math.ceil((s.expires-Date.now())/1000))));
+  return {token:token,name:s.name,team:s.team,language:s.language,teacher:s.teacher};
 }
 function logoutRoom(token) {
   CacheService.getScriptCache().remove('session:' + digest_(String(token || '')));
@@ -50,7 +73,7 @@ function getRoomState(token) {
 }
 function messages_(s) {
   return rows_(sheet_()).filter(function(r) { return Number(r[1]) === s.team; }).slice(-200).map(function(r) {
-    return {id:r[0], name:r[2], language:r[4], text:r[5], translation:r[6], status:status_(r), createdAt:iso_(r[8]), mine:r[3] === s.id};
+    return {id:r[0], name:r[2], language:r[4], text:r[5], translation:r[6], status:status_(r), createdAt:iso_(r[8]), mine:r[3] === s.id,revision:String(r[10] || r[0]),edited:String(r[10] || '').indexOf('edited:')===0};
   });
 }
 function sendMessage(token, input, requestId) {
@@ -66,11 +89,12 @@ function sendMessage(token, input, requestId) {
     if (rows.length >= 5000) throw new Error('행사 기록이 가득 찼습니다. 교사가 기존 기록을 삭제해 주세요.');
     rate_(s.id);
     var state = getConfig().translationReady ? 'pending' : 'unconfigured';
-    sheet.appendRow([id,s.team,cell_(s.name),s.id,s.language,cell_(text),'',state,new Date().toISOString(),Date.now()]);
+    var revision=Utilities.getUuid();
+    sheet.appendRow([id,s.team,cell_(s.name),s.id,s.language,cell_(text),'',state,new Date().toISOString(),Date.now(),revision]);
     SpreadsheetApp.flush();
-    return true;
+    return revision;
   });
-  if (created) translate_(id, text, s.language);
+  if (created) translate_(id,text,s.language,created);
   return {id:id};
 }
 function retryTranslation(token, id) {
@@ -88,9 +112,28 @@ function retryTranslation(token, id) {
     sheet.getRange(index+2,8).setValue('pending');
     sheet.getRange(index+2,10).setValue(Date.now());
     SpreadsheetApp.flush();
-    return {text:r[5], language:r[4]};
+    return {text:r[5],language:r[4],revision:String(r[10] || r[0])};
   });
-  translate_(id, message.text, message.language);
+  translate_(id,message.text,message.language,message.revision);
+  return true;
+}
+function editMessage(token,id,data) {
+  data=data || {};
+  var text=text_(data.text,1000);
+  if (!text || ['ko','ja'].indexOf(data.language)<0) throw new Error('내용과 작성 언어를 확인해 주세요.');
+  var revision=locked_(function() {
+    var teacher=session_(token);
+    if (!teacher.teacher) throw new Error('대화 수정은 교사만 할 수 있습니다.');
+    var sheet=sheet_(),rows=rows_(sheet),index=rows.findIndex(function(r){return r[0]===id;});
+    if (index<0) throw new Error('대화를 찾을 수 없습니다.');
+    var row=rows[index];manage_(teacher,row);
+    if (String(row[10] || row[0])!==data.revision) throw new Error('대화가 변경되었습니다. 최신 내용을 다시 열어 수정해 주세요.');
+    rate_(teacher.id);
+    var next='edited:'+Utilities.getUuid();
+    sheet.getRange(index+2,5,1,7).setValues([[data.language,cell_(text),'',getConfig().translationReady?'pending':'unconfigured',row[8],Date.now(),next]]);
+    SpreadsheetApp.flush();return next;
+  });
+  translate_(id,text,data.language,revision);
   return true;
 }
 function deleteMessage(token, id) {
@@ -223,13 +266,14 @@ function sheet_() {
   var sheet = book.getSheetByName('SAI_MESSAGES');
   if (!sheet) {
     sheet = book.insertSheet('SAI_MESSAGES');
-    sheet.appendRow(['id','team','name','owner','language','text','translation','status','createdAt','translationStarted']);
+    sheet.appendRow(['id','team','name','owner','language','text','translation','status','createdAt','translationStarted','revision']);
     sheet.setFrozenRows(1);
   }
+  if (sheet.getLastColumn()<11) sheet.getRange(1,11).setValue('revision');
   return sheet;
 }
 function rows_(sheet) {
-  return sheet.getLastRow() < 2 ? [] : sheet.getRange(2,1,sheet.getLastRow()-1,10).getValues();
+  return sheet.getLastRow() < 2 ? [] : sheet.getRange(2,1,sheet.getLastRow()-1,11).getValues();
 }
 function cell_(value) {
   // 수식 실행과 숫자·날짜 자동 변환을 막고 입력을 문자 그대로 저장합니다.
@@ -264,11 +308,11 @@ function translation_(text,language) {
   } catch (ignored) { /* 인증 헤더와 제공자 응답은 로그·화면에 노출하지 않습니다. */ }
   return {text:result,status:state};
 }
-function translate_(id,text,language) {
+function translate_(id,text,language,revision) {
   var translated=translation_(text,language);
   locked_(function() {
     var sheet=sheet_(), rows=rows_(sheet), index=rows.findIndex(function(r){return r[0]===id;});
-    if (index<0) return;
+    if (index<0 || String(rows[index][10] || rows[index][0])!==revision) return;
     sheet.getRange(index+2,7,1,2).setValues([[cell_(translated.text),translated.status]]);
     SpreadsheetApp.flush();
   });

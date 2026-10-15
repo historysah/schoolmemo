@@ -76,3 +76,30 @@ test('별도 교사 로그인은 비밀번호 없이 학생으로 입장하지 �
  const r=runtime();assert.throws(()=>join(r,1,{teacherLogin:true,teacherPassword:''}),/교사 비밀번호/);assert.throws(()=>join(r,1,{teacherLogin:true,teacherPassword:'wrong'}),/교사 비밀번호/);
  assert.equal(join(r,1,{teacherLogin:true,teacherPassword:'teacher-password-test'}).teacher,true);assert.equal(join(r).teacher,false);
 });
+
+test('교사는 비밀번호만으로 입장하고 학생 입장 코드가 없어도 관리 가능',()=>{
+ const r=runtime();r.props.delete('EVENT_CODE');
+ for(const password of ['',undefined,'wrong-password',{}])assert.throws(()=>r.ctx.joinTeacher(password),/교사 비밀번호/);
+ const t=r.ctx.joinTeacher('teacher-password-test');assert.equal(t.teacher,true);assert.equal(t.name,'교사');assert.equal(t.team,1);assert.equal(r.ctx.getRoomState(t.token).messages.length,0);
+});
+test('교사 팀 이동은 재로그인 없이 5팀 모두 가능하고 이전 토큰은 무효',()=>{
+ const r=runtime(),student=join(r);assert.throws(()=>r.ctx.switchTeacherTeam(student.token,2),/교사만/);
+ let t=r.ctx.joinTeacher('teacher-password-test');assert.throws(()=>r.ctx.switchTeacherTeam(t.token,6));
+ for(let team=2;team<=5;team++){const old=t.token;t=r.ctx.switchTeacherTeam(old,team);assert.equal(t.team,team);assert.equal(t.teacher,true);assert.throws(()=>r.ctx.getMessages(old),/SESSION_EXPIRED/);const own=r.ctx.getRoomState(t.token).opinions[team-1];r.ctx.saveTeamOpinion(t.token,{text:team+'팀 교사 수정',language:'ko',revision:own.revision});}
+ const state=r.ctx.getRoomState(t.token);assert.ok(state.opinions.slice(1).every(o=>o.text===o.team+'팀 교사 수정'));
+});
+test('교사만 학생 대화 수정·재번역, 원 작성자 유지 및 오래된 수정 거절',()=>{
+ const r=runtime(),a=join(r),other=join(r,2),t=r.ctx.joinTeacher('teacher-password-test');const sent=r.ctx.sendMessage(a.token,'수정 전',randomUUID());let m=r.ctx.getMessages(a.token)[0];
+ const data={text:'교사가 수정한 내용',language:'ko',revision:m.revision};assert.throws(()=>r.ctx.editMessage(a.token,sent.id,data),/교사만/);
+ const inOther=r.ctx.switchTeacherTeam(t.token,2);assert.throws(()=>r.ctx.editMessage(inOther.token,sent.id,data));const teacher=r.ctx.switchTeacherTeam(inOther.token,1);
+ r.props.set('OPENAI_API_KEY','test-only-key');r.ctx.editMessage(teacher.token,sent.id,data);m=r.ctx.getMessages(a.token)[0];assert.equal(m.text,data.text);assert.equal(m.name,'학생');assert.equal(m.edited,true);assert.equal(m.translation,'こんにちは');assert.throws(()=>r.ctx.editMessage(teacher.token,sent.id,data),/변경/);assert.equal(r.ctx.getMessages(other.token).length,0);
+});
+test('수정 전 늦은 번역이 교사 수정 내용을 덮어쓰지 않음',()=>{
+ const r=runtime(),a=join(r),t=r.ctx.joinTeacher('teacher-password-test');r.props.set('OPENAI_API_KEY','test-only-key');
+ r.setProviderHook(()=>{const pending=r.ctx.getMessages(t.token)[0];r.ctx.editMessage(t.token,pending.id,{text:'先生の新しい内容',language:'ja',revision:pending.revision});});
+ r.ctx.sendMessage(a.token,'이전 한국어',randomUUID());const m=r.ctx.getMessages(t.token)[0];assert.equal(m.text,'先生の新しい内容');assert.equal(m.translation,'안녕하세요');
+});
+test('기존 10열 대화 자료를 유지하며 교사 수정 지원',()=>{
+ const r=runtime(),t=r.ctx.joinTeacher('teacher-password-test');r.ctx.getMessages(t.token);const sheet=r.sheets.get('SAI_MESSAGES');sheet.appendRow(['old-id',1,'기존 학생','old-owner','ko','예전 대화','','unconfigured','2026-10-15T00:00:00Z',0]);
+ const m=r.ctx.getMessages(t.token)[0];assert.equal(m.revision,'old-id');r.ctx.editMessage(t.token,m.id,{text:'기존 대화 수정',language:'ko',revision:m.revision});assert.equal(r.ctx.getMessages(t.token)[0].text,'기존 대화 수정');assert.equal(r.ctx.getMessages(t.token)[0].name,'기존 학생');
+});

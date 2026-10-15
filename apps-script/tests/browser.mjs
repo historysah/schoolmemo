@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {chromium} from '../../node_modules/playwright/index.mjs';
 import assert from 'node:assert/strict';
 import {runtime} from './runtime.mjs';
-const r=runtime(),allowed=new Set(['getConfig','joinRoom','logoutRoom','getMessages','sendMessage','retryTranslation','deleteMessage','clearTeam','getRoomState','saveTeamOpinion','retryOpinionTranslation','clearAll']);
+const r=runtime(),allowed=new Set(['getConfig','joinRoom','logoutRoom','getMessages','sendMessage','retryTranslation','deleteMessage','clearTeam','getRoomState','saveTeamOpinion','retryOpinionTranslation','clearAll','joinTeacher','switchTeacherTeam','editMessage']);
 const server=createServer((req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end(readFileSync(new URL('../Index.html',import.meta.url)));});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const url=`http://127.0.0.1:${server.address().port}`;
@@ -27,7 +27,7 @@ try{
  await a.locator('#teacher-login').click();await a.locator('#teacher-dialog[open]').waitFor();assert.ok((await a.locator('#teacher-password').boundingBox()).height>=48);await a.screenshot({path:'/tmp/sai-teacher-login-mobile.png',fullPage:true});await a.locator('#close-teacher').click();
  await a.screenshot({path:'/tmp/sai-readable-mobile-entry.png',fullPage:true});await a.setViewportSize({width:1440,height:1000});
 
- async function join(p,name,lang='ko',team=1,teacher=false){await p.locator('[name=code]').fill('TEST-EVENT');await p.locator('[name=name]').fill(name);await p.locator(`[name=language][value=${lang}]`).check();await p.locator(`[name=team][value="${team}"]`).check();if(teacher){await p.locator('#teacher-login').click();await p.locator('#teacher-password').fill('teacher-password-test');await p.locator('#teacher-team').selectOption(String(team));await p.locator('#teacher-language').selectOption(lang);await p.locator('#teacher-submit').click();}else await p.locator('.enter-button').click();await p.locator('#room:not([hidden])').waitFor();}
+ async function join(p,name,lang='ko',team=1,teacher=false){if(teacher){await p.locator('#teacher-login').click();assert.equal(await p.locator('#teacher-form input').count(),1);assert.equal(await p.locator('#teacher-form select').count(),0);await p.locator('#teacher-password').fill('teacher-password-test');await p.locator('#teacher-submit').click();await p.locator('#room:not([hidden])').waitFor();if(team!==1){await p.locator(`#team-nav button[data-team="${team}"]`).click();await p.waitForFunction(t=>document.querySelector('#room-title').textContent===`${t}팀의 이야기`,team);}return;}await p.locator('[name=code]').fill('TEST-EVENT');await p.locator('[name=name]').fill(name);await p.locator(`[name=language][value=${lang}]`).check();await p.locator(`[name=team][value="${team}"]`).check();await p.locator('.enter-button').click();await p.locator('#room:not([hidden])').waitFor();}
  await join(a,'한국 학생');await join(b,'日本の生徒','ja');
  await a.locator('#message').fill('처음 뵙겠습니다');await a.locator('#send').click();await b.getByText('처음 뵙겠습니다',{exact:true}).waitFor({timeout:12000});
  assert.equal(await a.locator('input[type=file]').count(),0);assert.ok(await a.locator('#message').evaluate(el=>parseFloat(getComputedStyle(el).fontSize))>=18);
@@ -53,10 +53,14 @@ try{
  await a.setViewportSize({width:390,height:844});assert.equal(await a.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await a.screenshot({path:'/tmp/sai-gas-mobile.png',fullPage:true});
 
  // Teacher reset applies across all five teams and invalidates existing sessions.
- const teacher=await page();await join(teacher,'담당 교사','ko',3,true);teacher.once('dialog',d=>d.accept());await teacher.locator('#clear-all').click();await teacher.locator('#entry:not([hidden])').waitFor();
+ const teacher=await page();await join(teacher,'담당 교사','ko',1,true);
+ await teacher.locator('.message').filter({hasText:'처음 뵙겠습니다'}).getByText('수정 · 編集',{exact:true}).click();await teacher.locator('#message-edit-text').fill('교사가 수정한 대화');await teacher.locator('#save-message-edit').click();await teacher.locator('#message-edit-dialog:not([open])').waitFor({state:'attached'});await b.locator('#messages').getByText('교사가 수정한 대화',{exact:true}).waitFor({timeout:12000});
+ await teacher.locator('#team-nav button[data-team="2"]').click();await teacher.waitForFunction(()=>document.querySelector('#room-title').textContent==='2팀의 이야기');assert.equal(await teacher.locator('#entry').isVisible(),false);await teacher.locator('#save-opinion:not([disabled])').waitFor();await teacher.locator('#opinion-text').fill('교사가 정리한 2팀 의견');await teacher.locator('#save-opinion').click();await other.locator('#opinion-saved .original').filter({hasText:'교사가 정리한 2팀 의견'}).waitFor({timeout:12000});
+ await teacher.locator('#show-all-opinions').click();await teacher.locator('.edit-team-opinion[data-team="5"]').click();await teacher.waitForFunction(()=>document.querySelector('#room-title').textContent==='5팀의 이야기');assert.equal(await teacher.locator('#entry').isVisible(),false);await teacher.reload();await teacher.locator('#room:not([hidden])').waitFor();assert.equal(await teacher.locator('#room-title').textContent(),'5팀의 이야기');
+ teacher.once('dialog',d=>d.accept());await teacher.locator('#clear-all').click();await teacher.locator('#entry:not([hidden])').waitFor();
  await b.locator('#entry:not([hidden])').waitFor({timeout:12000});
  assert.equal(await a.locator('#all-opinions[open]').count(),0);
  await a.locator('#entry:not([hidden])').waitFor({timeout:12000});await join(a,'재입장 학생');await a.locator('#save-opinion:not([disabled])').waitFor();assert.equal(await a.locator('#messages .message').count(),0);assert.equal(await a.locator('#opinion-text').inputValue(),'');
  await a.locator('#logout').click();await a.locator('#entry:not([hidden])').waitFor();assert.equal(await a.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);
- console.log('PASS: QR image and published URL, larger text/controls, corner teacher login, four-browser sharing, team opinion editing/conflicts, all-five-team view, teacher-only full reset and re-entry, bilingual chat, safe text, desktop/mobile layout.');
+ console.log('PASS: QR image and published URL, larger text/controls, corner teacher login, four-browser sharing, team opinion editing/conflicts, all-five-team view, password-only teacher login, team switching, chat/opinion moderation, teacher-only full reset and re-entry, bilingual chat, safe text, desktop/mobile layout.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
