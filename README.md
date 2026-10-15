@@ -2,6 +2,10 @@
 
 가상 데이터로 시작하는 한국어 교무수첩 웹앱입니다. 학생 관리, 상담·회의 기록, 여러 학생 연결, 검색, 중요 기록 표시를 제공합니다.
 
+## 한일 역사 교류 앱
+
+사진 없이 5팀 문자 대화와 한일 AI 번역을 사용하는 Google Apps Script 버전은 [apps-script 안내서](apps-script/README.md)를 따르세요. `Code.gs`, `Index.html` 두 파일을 사용하며 별도 Node 서버나 Render 가입은 필요하지 않습니다. OpenAI API 키는 Google 프로젝트의 비공개 스크립트 속성에 설정합니다.
+
 ## 실행
 
 Node.js 20.19+ 또는 22.12+가 필요합니다. 현재 환경은 Node.js 24입니다.
