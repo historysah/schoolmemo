@@ -16,7 +16,7 @@ function joinRoom(data) {
   if (typeof data.code !== 'string' || !same_(data.code, p.getProperty('EVENT_CODE'))) throw new Error('행사 입장 코드가 맞지 않습니다. · 参加コードを確認してください。');
   var name = text_(data.name, 24);
   var team = Number(data.team);
-  if (!name || [1,2,3,4,5].indexOf(team) < 0 || ['ko','ja'].indexOf(data.language) < 0) throw new Error('닉네임, 팀, 언어를 확인해 주세요.');
+  if (!name || [1,2,3,4,5].indexOf(team) < 0 || ['ko','ja'].indexOf(data.language) < 0) throw new Error('이름, 팀, 언어를 확인해 주세요.');
   var teacher = false;
   if (data.teacherPassword) {
     var password = p.getProperty('TEACHER_PASSWORD');
@@ -24,7 +24,7 @@ function joinRoom(data) {
     teacher = true;
   }
   var token = Utilities.getUuid() + Utilities.getUuid();
-  var s = {id: Utilities.getUuid(), name: name, team: team, language: data.language, teacher: teacher, expires: Date.now() + 21600000};
+  var s = {id: Utilities.getUuid(), name: name, team: team, language: data.language, teacher: teacher, activityVersion: activityVersion_(), expires: Date.now() + 21600000};
   CacheService.getScriptCache().put('session:' + digest_(token), JSON.stringify(s), 21600);
   return {token: token, name: s.name, team: s.team, language: s.language, teacher: s.teacher};
 }
@@ -33,11 +33,17 @@ function logoutRoom(token) {
   return true;
 }
 function getMessages(token) {
-  var s = session_(token);
+  return locked_(function() { return messages_(session_(token)); });
+}
+function getRoomState(token) {
   return locked_(function() {
-    return rows_(sheet_()).filter(function(r) { return Number(r[1]) === s.team; }).slice(-200).map(function(r) {
-      return {id:r[0], name:r[2], language:r[4], text:r[5], translation:r[6], status:status_(r), createdAt:r[8] instanceof Date ? r[8].toISOString() : String(r[8]), mine:r[3] === s.id};
-    });
+    var s = session_(token);
+    return {messages:messages_(s), opinions:opinions_()};
+  });
+}
+function messages_(s) {
+  return rows_(sheet_()).filter(function(r) { return Number(r[1]) === s.team; }).slice(-200).map(function(r) {
+    return {id:r[0], name:r[2], language:r[4], text:r[5], translation:r[6], status:status_(r), createdAt:iso_(r[8]), mine:r[3] === s.id};
   });
 }
 function sendMessage(token, input, requestId) {
@@ -47,6 +53,7 @@ function sendMessage(token, input, requestId) {
   if (typeof requestId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) throw new Error('다시 입장한 뒤 전송해 주세요.');
   var id = s.id + ':' + requestId;
   var created = locked_(function() {
+    s = session_(token);
     var sheet = sheet_(), rows = rows_(sheet);
     if (rows.some(function(r) { return r[0] === id; })) return false;
     if (rows.length >= 5000) throw new Error('행사 기록이 가득 찼습니다. 교사가 기존 기록을 삭제해 주세요.');
@@ -63,6 +70,7 @@ function retryTranslation(token, id) {
   var s = session_(token);
   if (!getConfig().translationReady) throw new Error('교사가 API 키를 설정해야 합니다.');
   var message = locked_(function() {
+    s = session_(token);
     var sheet = sheet_(), rows = rows_(sheet), index = rows.findIndex(function(r) { return r[0] === id; });
     if (index < 0) throw new Error('기록을 찾을 수 없습니다.');
     var r = rows[index];
@@ -81,6 +89,7 @@ function retryTranslation(token, id) {
 function deleteMessage(token, id) {
   var s = session_(token);
   return locked_(function() {
+    s = session_(token);
     var sheet = sheet_(), rows = rows_(sheet), index = rows.findIndex(function(r) { return r[0] === id; });
     if (index < 0) return true;
     manage_(s,rows[index]);
@@ -93,10 +102,91 @@ function clearTeam(token) {
   var s = session_(token);
   if (!s.teacher) throw new Error('교사만 삭제할 수 있습니다.');
   return locked_(function() {
+    s = session_(token);
     var sheet = sheet_(), rows = rows_(sheet);
     for (var i=rows.length-1;i>=0;i--) if (Number(rows[i][1])===s.team) sheet.deleteRow(i+2);
     SpreadsheetApp.flush();
     return true;
+  });
+}
+/** 교사만 5팀 전체 대화와 의견을 초기화합니다. API 설정은 보존합니다. */
+function clearAll(token, confirmation) {
+  return locked_(function() {
+    var s = session_(token);
+    if (!s.teacher || confirmation !== 'RESET_ALL') throw new Error('교사의 전체 초기화 확인이 필요합니다.');
+    var sheet = sheet_(), count = sheet.getLastRow()-1;
+    if (count>0) sheet.deleteRows(2,count);
+    var opinions = opinionSheet_();
+    opinions.getRange(2,1,5,9).setValues(emptyOpinions_());
+    PropertiesService.getScriptProperties().setProperty('ACTIVITY_VERSION', Utilities.getUuid());
+    SpreadsheetApp.flush();
+    return true;
+  });
+}
+function saveTeamOpinion(token, data) {
+  var s = session_(token);
+  data = data || {};
+  var text = text_(data.text,1000);
+  if (['ko','ja'].indexOf(data.language)<0 || typeof data.revision!=='string') throw new Error('의견의 작성 언어와 저장 상태를 확인해 주세요.');
+  var revision = locked_(function() {
+    s = session_(token);
+    var sheet = opinionSheet_(), row = sheet.getRange(s.team+1,1,1,9).getValues()[0];
+    if (row[5]!==data.revision) throw new Error('다른 팀원이 먼저 저장했습니다. 입력한 내용은 유지됩니다. 최신 의견을 불러온 뒤 다시 정리해 주세요.');
+    rate_(s.id);
+    var version = Utilities.getUuid();
+    sheet.getRange(s.team+1,1,1,9).setValues([[s.team,cell_(text),data.language,cell_(s.name),new Date().toISOString(),version,'',text?(getConfig().translationReady?'pending':'unconfigured'):'none',Date.now()]]);
+    SpreadsheetApp.flush();
+    return version;
+  });
+  if (text) translateOpinion_(s.team,revision,text,data.language);
+  return {revision:revision};
+}
+function retryOpinionTranslation(token, revision) {
+  var s = session_(token);
+  if (!getConfig().translationReady) throw new Error('교사가 API 키를 설정해야 합니다.');
+  var message = locked_(function() {
+    s = session_(token);
+    var sheet=opinionSheet_(), row=sheet.getRange(s.team+1,1,1,9).getValues()[0];
+    if (row[5]!==revision) throw new Error('의견이 변경되었습니다. 최신 의견을 확인해 주세요.');
+    if (!row[1] || row[7]==='done' || opinionStatus_(row)==='pending') throw new Error('번역 상태를 확인한 뒤 다시 시도해 주세요.');
+    rate_(s.id);
+    sheet.getRange(s.team+1,8,1,2).setValues([['pending',Date.now()]]);
+    SpreadsheetApp.flush();
+    return {text:row[1],language:row[2]};
+  });
+  translateOpinion_(s.team,revision,message.text,message.language);
+  return true;
+}
+function activityVersion_() { return PropertiesService.getScriptProperties().getProperty('ACTIVITY_VERSION') || 'initial'; }
+function iso_(value) { return value instanceof Date ? value.toISOString() : String(value || ''); }
+function emptyOpinions_() {
+  return [1,2,3,4,5].map(function(team) { return [team,'','ko','','',Utilities.getUuid(),'','none',0]; });
+}
+function opinionSheet_() {
+  var book=SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID'));
+  var sheet=book.getSheetByName('SAI_OPINIONS');
+  if (!sheet) {
+    sheet=book.insertSheet('SAI_OPINIONS');
+    sheet.appendRow(['team','text','language','editor','updatedAt','revision','translation','status','translationStarted']);
+    emptyOpinions_().forEach(function(row) { sheet.appendRow(row); });
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+function opinionStatus_(row) { return row[7]==='pending' && Date.now()-Number(row[8])>120000 ? 'failed' : row[7]; }
+function opinions_() {
+  return opinionSheet_().getRange(2,1,5,9).getValues().map(function(r) {
+    return {team:Number(r[0]),text:String(r[1]),language:r[2],editor:String(r[3]),updatedAt:iso_(r[4]),revision:r[5],translation:String(r[6]),status:opinionStatus_(r)};
+  });
+}
+function translateOpinion_(team,revision,text,language) {
+  var result=translation_(text,language);
+  locked_(function() {
+    var sheet=opinionSheet_(), row=sheet.getRange(team+1,1,1,9).getValues()[0];
+    // 이전 번역이 늦게 도착해도 새 의견이나 초기화된 의견을 덮어쓰지 않습니다.
+    if (row[5]!==revision) return;
+    sheet.getRange(team+1,7,1,2).setValues([[cell_(result.text),result.status]]);
+    SpreadsheetApp.flush();
   });
 }
 // 밑줄로 끝나는 함수는 google.script.run에서 직접 호출할 수 없습니다.
@@ -111,7 +201,7 @@ function same_(a,b) { return digest_(a) === digest_(b || ''); }
 function session_(token) {
   var raw = typeof token === 'string' && CacheService.getScriptCache().get('session:' + digest_(token));
   var s = raw && JSON.parse(raw);
-  if (!s || s.expires < Date.now()) throw new Error('SESSION_EXPIRED: 다시 입장해 주세요. · 再入室してください。');
+  if (!s || s.expires < Date.now() || (s.activityVersion || 'initial') !== activityVersion_()) throw new Error('SESSION_EXPIRED: 다시 입장해 주세요. · 再入室してください。');
   return s;
 }
 function locked_(fn) {
@@ -145,12 +235,12 @@ function status_(r) { return r[7] === 'pending' && Date.now()-Number(r[9])>12000
 function rate_(id) {
   var cache = CacheService.getScriptCache(), key = 'rate:' + id;
   var recent = JSON.parse(cache.get(key) || '[]').filter(function(t) { return t > Date.now()-60000; });
-  if (recent.length>=8) throw new Error('분당 8회까지 전송·재번역할 수 있습니다. 잠시 기다려 주세요.');
+  if (recent.length>=8) throw new Error('분당 8회까지 전송·의견 저장·재번역할 수 있습니다. 잠시 기다려 주세요.');
   recent.push(Date.now());cache.put(key,JSON.stringify(recent),60);
 }
-function translate_(id, text, language) {
+function translation_(text,language) {
   var props = PropertiesService.getScriptProperties(), key = props.getProperty('OPENAI_API_KEY');
-  if (!key) return;
+  if (!key) return {text:'',status:'unconfigured'};
   var result = '', state = 'failed';
   try {
     var response = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', {
@@ -165,10 +255,14 @@ function translate_(id, text, language) {
       if (typeof output==='string' && output.trim() && output.length<=10000) { result=output.trim();state='done'; }
     }
   } catch (ignored) { /* 인증 헤더와 제공자 응답은 로그·화면에 노출하지 않습니다. */ }
+  return {text:result,status:state};
+}
+function translate_(id,text,language) {
+  var translated=translation_(text,language);
   locked_(function() {
     var sheet=sheet_(), rows=rows_(sheet), index=rows.findIndex(function(r){return r[0]===id;});
     if (index<0) return;
-    sheet.getRange(index+2,7,1,2).setValues([[cell_(result),state]]);
+    sheet.getRange(index+2,7,1,2).setValues([[cell_(translated.text),translated.status]]);
     SpreadsheetApp.flush();
   });
 }
